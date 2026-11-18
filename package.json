@@ -1,0 +1,9 @@
+{
+  "name": "my-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "记录看过的剧、听过的歌、读过的文章｜零依赖纯前端 PWA",
+  "scripts": {
+    "dev": "node server.js"
+  }
+}
