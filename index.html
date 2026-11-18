@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>我的记录本</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23f3ece0'/%3E%3Cpath d='M9 8v16' stroke='%23b9553f' stroke-width='2'/%3E%3Cpath d='M13 11h10M13 16h10M13 21h7' stroke='%23554533' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#fffdf6">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="记录本">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="sync-config.js"></script>
+  <script src="sync.js" defer></script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>我的记录本</h1>
+    </div>
+    <p class="tagline">看过的剧、听过的歌、读过的文章，写在纸上才不会散掉。</p>
+    <div class="header-meta">
+      <p class="stat" id="stat">共 0 条记录</p>
+      <button type="button" class="link-btn" id="review-jump">随手翻一条旧的</button>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <!-- ================= 记录表单 ================= -->
+    <section class="panel panel-form" aria-labelledby="form-title">
+      <div class="panel-head">
+        <h2 id="form-title">记一条</h2>
+        <button type="button" class="link-btn" id="cancel-edit" hidden>取消编辑</button>
+      </div>
+
+      <form id="record-form" autocomplete="off">
+
+        <div class="field">
+          <label for="f-title">标题</label>
+          <input id="f-title" name="title" type="text" maxlength="80" placeholder="比如：万历十五年 第三集" required>
+        </div>
+
+        <div class="field">
+          <label for="f-note">一句话感受</label>
+          <textarea id="f-note" name="note" rows="2" maxlength="200" placeholder="它哪里戳到你了？一句话就够。"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="f-tag">关键词标签</label>
+          <div class="tag-editor" id="tag-editor">
+            <input id="f-tag" name="tag" type="text" maxlength="20" placeholder="输入后按回车或逗号添加">
+          </div>
+          <span class="field-hint">点下面的常用标签直接加上；想到新词就手打，最多 8 个。</span>
+          <div class="quick-tags" id="quick-tags"></div>
+        </div>
+
+        <div class="field rating-field">
+          <span class="field-label" id="rating-label">值几星</span>
+          <div class="rating" id="rating" role="group" aria-labelledby="rating-label"></div>
+          <span class="field-hint" id="rating-hint">点星星打分，再点同一下取消。</span>
+        </div>
+
+        <details class="field more">
+          <summary>补充：金句 / 来源</summary>
+          <div class="more-body">
+            <label for="f-quote">金句摘抄</label>
+            <textarea id="f-quote" name="quote" rows="2" maxlength="200" placeholder="原文里最想留下的那一句"></textarea>
+
+            <label for="f-source">来源链接</label>
+            <input id="f-source" name="source" type="text" inputmode="url" placeholder="https:// 豆瓣、歌单或文章的地址">
+            <span class="field-hint">填了会变成记录上的可点链接。</span>
+          </div>
+        </details>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit" id="submit-btn">保存记录</button>
+          <button class="btn btn-ghost" type="button" id="clear-btn">清空</button>
+          <span class="form-msg" id="form-msg" role="status" aria-live="polite"></span>
+        </div>
+
+      </form>
+    </section>
+
+    <!-- ================= 记录列表 ================= -->
+    <section class="panel panel-list" aria-labelledby="list-title">
+      <div class="panel-head">
+        <h2 id="list-title">记录列表</h2>
+        <span class="list-count" id="list-count">0 条</span>
+      </div>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="搜索标题、感受、金句或标签" autocomplete="off">
+      </div>
+
+      <div class="tag-filter" id="tag-filter"></div>
+
+      <div id="record-list" class="record-list"></div>
+
+      <div class="empty" id="empty">
+        <p class="empty-title">还没有记录</p>
+        <p class="empty-text">写下第一条：最近一部让你想记住的剧、一首歌，或者一篇文章。</p>
+      </div>
+    </section>
+
+    <!-- ================= 回顾 ================= -->
+    <section class="panel review-panel" aria-labelledby="review-title">
+      <div class="panel-head">
+        <h2 id="review-title">回顾</h2>
+        <button type="button" class="link-btn" id="reroll-btn">换一条</button>
+      </div>
+
+      <div class="review-card" id="review-card"></div>
+
+      <div class="review-time">
+        <div class="review-filters" id="review-range"></div>
+        <button type="button" class="link-btn" id="clear-range" hidden>清除筛选</button>
+      </div>
+
+      <div class="review-months" id="review-months"></div>
+    </section>
+
+  </main>
+
+  <!-- ================= 备份 ================= -->
+  <section class="panel panel-wide" aria-labelledby="backup-title">
+    <div class="panel-head">
+      <h2 id="backup-title">数据备份</h2>
+    </div>
+    <p class="backup-text">记录存在这台设备的浏览器里。换电脑、清缓存之前点一下导出，下次用导入恢复，不会丢。</p>
+    <p class="backup-text tip">
+      装成图标后可以离线打开：电脑用 Chrome / Edge 点地址栏右侧的安装图标；手机在浏览器菜单里选「添加到主屏幕」，iPhone 用 Safari 的分享按钮。
+    </p>
+    <p class="backup-text" id="sync-status" hidden></p>
+    <div class="backup-actions">
+      <button class="btn btn-primary" type="button" id="export-btn">导出备份</button>
+      <button class="btn btn-ghost" type="button" id="import-btn">导入备份</button>
+      <button class="btn btn-ghost" type="button" id="install-btn" hidden>安装到桌面</button>
+      <input id="import-file" type="file" accept=".json,application/json" hidden>
+      <span class="form-msg" id="backup-msg" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <p id="footer-note">全部数据只存在本机浏览器，不会上传到任何地方。</p>
+  </footer>
+
+  <!-- 手机端：底部固定记录入口 -->
+  <button class="fab" type="button" id="fab">
+    <span class="fab-plus" aria-hidden="true">+</span>
+    记一条
+  </button>
+
+  <!-- ================= 随手翻：弹层 ================= -->
+  <div class="review-modal" id="review-modal" hidden>
+    <div class="review-modal-backdrop" id="rm-backdrop"></div>
+    <div class="review-modal-card" role="dialog" aria-modal="true" aria-labelledby="rm-title">
+      <div class="review-modal-head">
+        <h3 id="rm-title">随手翻到一条</h3>
+        <button type="button" class="link-btn" id="rm-close">关闭</button>
+      </div>
+      <p class="review-hint" id="rm-hint"></p>
+      <div class="review-modal-body" id="rm-body"></div>
+      <div class="review-modal-foot">
+        <button type="button" class="btn btn-ghost" id="rm-reroll">换一条</button>
+        <button type="button" class="btn btn-primary" id="rm-open">去列表里看</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
