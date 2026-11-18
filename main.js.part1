@@ -1,0 +1,442 @@
+// 我的记录本 —— 全部使用原生 JS，不依赖任何框架或第三方库
+//
+// 代码结构（后面加功能照着这里的位置加）：
+//   1. 存储层：读写 localStorage、数据规范化
+//   2. 标签：常用标签、编辑中的标签、标签分类配色
+//   3. 评分：五颗星的渲染与取值
+//   4. 表单：新建 / 编辑同一条记录
+//   5. 列表：渲染、搜索、按标签筛选、删除、编辑入口
+//   6. 回顾：随机翻旧记录、按周/月/更早筛选、按月分组
+//   7. 备份：导出 / 导入 JSON
+//   8. 离线可用（PWA）：注册 sw.js、安装按钮
+//   9. 云同步接入：把本地数据交给 sync.js，由它和 GitHub 仓库对齐
+//   10. 启动
+
+(function () {
+  'use strict';
+
+  // ================= 1. 存储层 =================
+  var STORAGE_KEY = 'notes.records.v1';
+  var MAX_TAGS = 8;
+
+  var state = {
+    records: [],      // [{ id, title, note, tags, rating, quote, source, createdAt, updatedAt }]
+    editingTags: [],  // 表单里正在编辑的标签
+    draftRating: 0,   // 表单里选中的星级
+    editingId: null,  // 正在编辑的记录 id；null 表示新建
+    keyword: '',      // 搜索关键词
+    activeTag: null,  // 当前筛选的标签
+    rangeFilter: null, // 时间筛选：'week' / 'month' / 'older' / null
+    monthFilter: null, // 按月份筛选：'YYYY-MM' / null
+    reviewPickId: null, // 回顾卡片当前显示的那条记录 id
+    modalPickId: null,  // 弹层里正在显示的那条记录 id
+  };
+
+  function loadRecords() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(isValidRecord).map(normalizeRecord);
+    } catch (e) {
+      console.warn('读取本地记录失败：', e);
+      return [];
+    }
+  }
+
+  function isValidRecord(item) {
+    return item && typeof item === 'object' && typeof item.title === 'string' && item.title.trim();
+  }
+
+  function normalizeRecord(item) {
+    var rating = Number(item.rating);
+    return {
+      id: item.id || makeId(),
+      title: String(item.title).trim(),
+      note: typeof item.note === 'string' ? item.note : '',
+      tags: Array.isArray(item.tags)
+        ? item.tags.filter(function (t) { return typeof t === 'string' && t; }).slice(0, MAX_TAGS)
+        : [],
+      rating: rating >= 1 && rating <= 5 ? Math.round(rating) : 0,
+      quote: typeof item.quote === 'string' ? item.quote : '',
+      source: typeof item.source === 'string' ? item.source : '',
+      createdAt: item.createdAt || new Date().toISOString(),
+      updatedAt: item.updatedAt || item.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function saveRecords() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records));
+      return true;
+    } catch (e) {
+      console.warn('写入本地记录失败：', e);
+      showMsg('form-msg', '保存失败：浏览器存储空间可能已满', true);
+      return false;
+    }
+  }
+
+  function makeId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  // ================= 2. 标签 =================
+  // 常用标签：类型 / 情绪 / 用途三组，点一下就加进去
+  var QUICK_TAG_GROUPS = [
+    { label: '类型', kind: 'type', tags: ['剧', '歌', '文章'] },
+    { label: '情绪', kind: 'mood', tags: ['震撼', '治愈', '烧脑', '压抑', '好笑', '上头'] },
+    { label: '用途', kind: 'use', tags: ['想再看一遍', '想推荐', '当素材'] },
+  ];
+
+  // 标签 -> 分类，用来给标签上不同颜色
+  var TAG_KIND = {};
+  QUICK_TAG_GROUPS.forEach(function (group) {
+    group.tags.forEach(function (tag) { TAG_KIND[tag] = group.kind; });
+  });
+
+  function tagClass(tag) {
+    var kind = TAG_KIND[tag];
+    return kind ? 'tag-mini tag-' + kind : 'tag-mini';
+  }
+
+  function renderQuickTags() {
+    var box = document.getElementById('quick-tags');
+    if (!box) return;
+    box.innerHTML = '';
+
+    QUICK_TAG_GROUPS.forEach(function (group) {
+      var wrap = document.createElement('div');
+      wrap.className = 'quick-group';
+
+      var label = document.createElement('span');
+      label.className = 'quick-group-label';
+      label.textContent = group.label;
+      wrap.appendChild(label);
+
+      var list = document.createElement('div');
+      list.className = 'quick-list';
+
+      group.tags.forEach(function (tag) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'quick-btn';
+        btn.textContent = tag;
+        btn.dataset.tag = tag;
+        btn.addEventListener('click', function () { toggleEditingTag(tag); });
+        list.appendChild(btn);
+      });
+
+      wrap.appendChild(list);
+      box.appendChild(wrap);
+    });
+  }
+
+  function toggleEditingTag(tag) {
+    var idx = state.editingTags.indexOf(tag);
+    if (idx >= 0) {
+      state.editingTags.splice(idx, 1);
+    } else {
+      if (state.editingTags.length >= MAX_TAGS) {
+        showMsg('form-msg', '标签最多 ' + MAX_TAGS + ' 个', true);
+        return;
+      }
+      state.editingTags.push(tag);
+    }
+    renderTagEditor();
+  }
+
+  function addEditingTag(raw) {
+    var tag = String(raw).replace(/[,，]/g, '').trim();
+    if (!tag) return;
+    if (state.editingTags.indexOf(tag) >= 0) return;
+    if (state.editingTags.length >= MAX_TAGS) {
+      showMsg('form-msg', '标签最多 ' + MAX_TAGS + ' 个', true);
+      return;
+    }
+    state.editingTags.push(tag);
+    renderTagEditor();
+  }
+
+  function renderTagEditor() {
+    var editor = document.getElementById('tag-editor');
+    var input = document.getElementById('f-tag');
+    if (!editor || !input) return;
+
+    Array.prototype.slice.call(editor.querySelectorAll('.chip')).forEach(function (el) {
+      el.remove();
+    });
+
+    state.editingTags.forEach(function (tag) {
+      var chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.appendChild(document.createTextNode(tag));
+
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.setAttribute('aria-label', '移除标签 ' + tag);
+      x.textContent = '×';
+      x.addEventListener('click', function () {
+        state.editingTags = state.editingTags.filter(function (t) { return t !== tag; });
+        renderTagEditor();
+      });
+
+      chip.appendChild(x);
+      editor.insertBefore(chip, input);
+    });
+
+    Array.prototype.slice.call(document.querySelectorAll('.quick-btn')).forEach(function (btn) {
+      btn.classList.toggle('is-on', state.editingTags.indexOf(btn.dataset.tag) >= 0);
+    });
+  }
+
+  // ================= 3. 评分 =================
+  var STAR_PATH = 'M12 2.6l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5-4.7-4.6 6.5-.9z';
+
+  function starSvg() {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', STAR_PATH);
+    path.setAttribute('class', 'star-path');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function renderRating() {
+    var box = document.getElementById('rating');
+    if (!box) return;
+    box.innerHTML = '';
+
+    for (var i = 1; i <= 5; i++) {
+      (function (value) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'star-btn' + (value <= state.draftRating ? ' is-on' : '');
+        btn.setAttribute('aria-label', value + ' 星');
+        btn.setAttribute('aria-pressed', value <= state.draftRating ? 'true' : 'false');
+        btn.appendChild(starSvg());
+        btn.addEventListener('click', function () {
+          // 再点一次同一颗，归零
+          state.draftRating = state.draftRating === value ? 0 : value;
+          renderRating();
+        });
+        box.appendChild(btn);
+      })(i);
+    }
+  }
+
+  // ================= 4. 表单：新建 / 编辑 =================
+  function initForm() {
+    var form = document.getElementById('record-form');
+    var tagInput = document.getElementById('f-tag');
+    var clearBtn = document.getElementById('clear-btn');
+    var cancelBtn = document.getElementById('cancel-edit');
+    if (!form || !tagInput) return;
+
+    // 标签输入：回车 / 逗号提交
+    tagInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+        e.preventDefault();
+        addEditingTag(tagInput.value);
+        tagInput.value = '';
+      } else if (e.key === 'Backspace' && tagInput.value === '' && state.editingTags.length) {
+        state.editingTags.pop();
+        renderTagEditor();
+      }
+    });
+
+    tagInput.addEventListener('input', function () {
+      if (/[,，]/.test(tagInput.value)) {
+        tagInput.value.split(/[,，]/).forEach(addEditingTag);
+        tagInput.value = '';
+      }
+    });
+
+    tagInput.addEventListener('blur', function () {
+      if (tagInput.value.trim()) {
+        addEditingTag(tagInput.value);
+        tagInput.value = '';
+      }
+    });
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+
+      var titleEl = document.getElementById('f-title');
+      var noteEl = document.getElementById('f-note');
+      var quoteEl = document.getElementById('f-quote');
+      var sourceEl = document.getElementById('f-source');
+      var title = titleEl.value.trim();
+
+      if (!title) {
+        showMsg('form-msg', '标题不能为空', true);
+        titleEl.focus();
+        return;
+      }
+
+      if (tagInput.value.trim()) {
+        addEditingTag(tagInput.value);
+        tagInput.value = '';
+      }
+
+      var sourceRaw = sourceEl.value.trim();
+      var source = safeUrl(sourceRaw);
+      if (sourceRaw && !source) {
+        showMsg('form-msg', '来源链接只能填 http / https 地址', true);
+        sourceEl.focus();
+        return;
+      }
+
+      var wasEditing = Boolean(state.editingId);
+
+      var payload = {
+        title: title,
+        note: noteEl.value.trim(),
+        tags: state.editingTags.slice(),
+        rating: state.draftRating,
+        quote: quoteEl.value.trim(),
+        source: source,
+        updatedAt: new Date().toISOString(),
+      };
+
+      var targetId;
+
+      if (state.editingId) {
+        // —— 编辑模式：更新已有记录，位置不变
+        var idx = state.records.findIndex(function (r) { return r.id === state.editingId; });
+        if (idx < 0) {
+          showMsg('form-msg', '这条记录已经不在了', true);
+          exitEditMode();
+          renderAll();
+          return;
+        }
+        Object.keys(payload).forEach(function (k) { state.records[idx][k] = payload[k]; });
+        targetId = state.editingId;
+      } else {
+        // —— 新建：放到列表最前
+        targetId = makeId();
+        state.records.unshift(Object.assign({
+          id: targetId,
+          createdAt: payload.updatedAt,
+        }, payload));
+      }
+
+      saveRecords();
+      if (window.NotesSync) NotesSync.schedule();
+      exitEditMode();
+      renderAll();
+      flashRecord(targetId);
+      showMsg('form-msg', wasEditing ? '已保存修改' : '已保存', false, 2200);
+
+      if (window.innerWidth < 860) {
+        document.getElementById('f-title').blur();
+      }
+    });
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function () {
+        exitEditMode(); // 不管是新建还是编辑，都退回干净状态
+        showMsg('form-msg', '', false);
+        document.getElementById('f-title').focus();
+      });
+    }
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        exitEditMode();
+        showMsg('form-msg', '已取消编辑', false, 2000);
+      });
+    }
+  }
+
+  /** 进入编辑模式：把这条记录填回表单 */
+  function enterEditMode(rec) {
+    state.editingId = rec.id;
+    state.editingTags = rec.tags.slice();
+    state.draftRating = rec.rating || 0;
+
+    document.getElementById('f-title').value = rec.title;
+    document.getElementById('f-note').value = rec.note;
+    document.getElementById('f-quote').value = rec.quote || '';
+    document.getElementById('f-source').value = rec.source || '';
+
+    var more = document.querySelector('.more');
+    if (more) more.open = Boolean(rec.quote || rec.source);
+
+    document.getElementById('form-title').textContent = '改这条';
+    document.getElementById('submit-btn').textContent = '保存修改';
+    var cancelBtn = document.getElementById('cancel-edit');
+    if (cancelBtn) cancelBtn.hidden = false;
+
+    renderTagEditor();
+    renderRating();
+    showMsg('form-msg', '', false);
+
+    var panel = document.querySelector('.panel-form');
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('f-title').focus({ preventScroll: true });
+  }
+
+  /** 退出编辑模式，表单回到新建状态 */
+  function exitEditMode() {
+    state.editingId = null;
+    resetForm();
+  }
+
+  function resetForm() {
+    var form = document.getElementById('record-form');
+    if (form) form.reset();
+
+    state.editingTags = [];
+    state.draftRating = 0;
+
+    var more = document.querySelector('.more');
+    if (more) more.open = false;
+
+    document.getElementById('form-title').textContent = '记一条';
+    document.getElementById('submit-btn').textContent = '保存记录';
+    var cancelBtn = document.getElementById('cancel-edit');
+    if (cancelBtn) cancelBtn.hidden = true;
+
+    renderTagEditor();
+    renderRating();
+  }
+
+  function showMsg(id, text, isError, autoHideMs) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('is-error', Boolean(isError));
+    if (autoHideMs) {
+      window.setTimeout(function () {
+        if (el.textContent === text) el.textContent = '';
+      }, autoHideMs);
+    }
+  }
+
+  /** 只接受 http / https；没写协议时补 https:// */
+  function safeUrl(raw) {
+    var text = String(raw || '').trim();
+    if (!text) return '';
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) {
+      text = 'https://' + text.replace(/^\/+/, '');
+    }
+    try {
+      var u = new URL(text);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+      return u.href;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function hostLabel(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch (e) {
+      return '来源';
+    }
+  }
